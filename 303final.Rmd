@@ -1,0 +1,437 @@
+---
+title: "final project"
+author: "yuyang chen"
+date: "2024-03-27"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(ggplot2)
+library(glmnet)
+library(faraway)
+library(pROC)
+library(caret)
+library(rms)
+library(knitr)
+library(caret)
+library(dplyr)
+library(psych) 
+library(gridExtra)
+set.seed(1007978191)
+```
+
+
+```{r}
+data <- read.csv("airline_passenger_satisfaction.csv")
+data <- data[1:3000,]
+train_index <- createDataPartition(data$satisfaction, p = 0.7, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+train_data = na.omit(train_data)
+summary(train_data)
+```
+
+```{r}
+model <- glm(as.factor(satisfaction)~.,data = train_data, family = "binomial")
+summary(model)
+#AIC variable selection
+sel.var.aic <- step(model, trace = 0, k = 2, direction = "both")
+select_var_aic <- attr(terms(sel.var.aic),"term.labels")
+select_var_aic
+#BIC variable selection
+sel.var.bic <- step(model, trace = 0, k = log(nrow(train_data)), direction = "both")
+select_var_bic <- attr(terms(sel.var.bic),"term.labels")
+select_var_bic
+```
+```{r}
+#Lasso
+x = as.matrix(train_data[,1:24])
+y = train_data$satisfaction
+fit = glmnet(x, y, family = "binomial")
+plot(fit, xvar = "dev", label = TRUE)
+cv.out = cv.glmnet(x, y, family = "binomial", type.measure = "class", alpha = 0.5)
+plot(cv.out)
+best.lambda <- cv.out$lambda.1se
+best.lambda
+co<-coef(cv.out, s = "lambda.1se")
+co
+```
+
+```{r}
+lmod <- glm(as.factor(satisfaction) ~ type_of_travel + checkin_service + 
+              leg_room_service + online_boarding + 
+              onboard_service + cleanliness, data = train_data, 
+            family = "binomial")
+summary(lmod)
+vif(lmod)
+```
+```{r}
+lmod1 <- glm(as.factor(satisfaction) ~ baggage_handling + checkin_service + 
+              leg_room_service + online_boarding + 
+              onboard_service + cleanliness, data = train_data, 
+            family = "binomial")
+summary(lmod1)
+vif(lmod1)
+```
+```{r}
+lmod2 <- glm(as.factor(satisfaction) ~ inflight_wifi_service + checkin_service + 
+              leg_room_service + online_boarding + 
+              onboard_service + cleanliness, data = train_data, 
+            family = "binomial")
+summary(lmod2)
+vif(lmod2)
+```
+
+
+## Model calibration with cross-validation and bootstrap ##
+
+```{r}
+train_data$satisfaction = as.factor(train_data$satisfaction)
+lrm.final <- lrm(satisfaction ~ ., 
+                 data = train_data[,which(colnames(train_data) %in% 
+                                            c(select_var_bic, "satisfaction"))],
+                 x =TRUE, y = TRUE, model= T)
+cross.calib <- calibrate(lrm.final, method="crossvalidation", B=10) # model calibration
+plot(cross.calib, las=1, xlab = "Predicted Probability")
+```
+
+
+## Discrimination with ROC curve
+
+```{r, eval=TRUE, echo = T}
+p <- predict(lrm.final, type = "fitted")
+
+roc_logit <- roc(train_data$satisfaction ~ p)
+## The True Positive Rate ##
+TPR <- roc_logit$sensitivities
+## The False Positive Rate ##
+FPR <- 1 - roc_logit$specificities
+
+plot(FPR, TPR, xlim = c(0,1), ylim = c(0,1), type = 'l', lty = 1, lwd = 2,col = 'red')
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+text(0.7,0.4,label = paste("AUC = ", round(auc(roc_logit),2)))
+
+auc(roc_logit)
+```
+
+## Plot the dfbetas and deviance residuals
+
+## Dfbetas
+```{r, eval=TRUE, echo = T}
+## Dfbetas ##
+
+final_model<- glm(as.factor(satisfaction) ~ type_of_travel + checkin_service + 
+              leg_room_service + online_boarding + 
+              onboard_service + cleanliness, data = train_data, 
+            family = "binomial")
+df.final <- dfbetas(final_model)
+head(df.final)
+
+
+# dfbeta
+plot_1 <- ggplot(train_data, aes(x = type_of_travel, y = df.final[, 2])) +
+  geom_boxplot(fill = "lightblue") +
+  labs(x = "Type of Travel", y = "Dfbetas") +
+  theme_minimal()
+
+plot_2 <- ggplot(train_data, aes(x = checkin_service, y = df.final[, 3])) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "grey") +
+  labs(x = "Check-in Service", y = "Dfbetas") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_hline(yintercept = -2/sqrt(nrow(df.final)), linetype = "dotted") +
+  geom_hline(yintercept = 2/sqrt(nrow(df.final)), linetype = "dotted")
+
+plot_3 <- ggplot(train_data, aes(x = leg_room_service, y = df.final[, 4])) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "pink") +
+  labs(x = "Leg Room Service", y = "Dfbetas") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_hline(yintercept = -2/sqrt(nrow(df.final)), linetype = "dotted") +
+  geom_hline(yintercept = 2/sqrt(nrow(df.final)), linetype = "dotted")
+
+plot_4 <- ggplot(train_data, aes(x = online_boarding, y = df.final[, 5])) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(x = "Online Boarding", y = "Dfbetas") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_hline(yintercept = -2/sqrt(nrow(df.final)), linetype = "dotted") +
+  geom_hline(yintercept = 2/sqrt(nrow(df.final)), linetype = "dotted")
+
+plot_5 <- ggplot(train_data, aes(x = onboard_service, y = df.final[, 6])) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "green") +
+  labs(x = "Onboard Service", y = "Dfbetas") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_hline(yintercept = -2/sqrt(nrow(df.final)), linetype = "dotted") +
+  geom_hline(yintercept = 2/sqrt(nrow(df.final)), linetype = "dotted")
+
+plot_6 <- ggplot(train_data, aes(x = cleanliness, y = df.final[, 7])) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "red") +
+  labs(x = "Cleanliness", y = "Dfbetas") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_hline(yintercept = -2/sqrt(nrow(df.final)), linetype = "dotted") +
+  geom_hline(yintercept = 2/sqrt(nrow(df.final)), linetype = "dotted")
+
+# save pdf
+grid <- grid.arrange(plot_1, plot_2, plot_3, plot_4, plot_5, plot_6,ncol = 2,
+                     top = "Figure 5: Dfbetas by All predictors")
+ggsave("dfbeta_plots_new_model.png", grid, width = 12, height = 10)
+
+```
+
+
+## Deviance residuals
+
+
+```{r, eval=TRUE, echo = T}
+## Plot the deviance residuals ##
+final_model <- glm(as.factor(satisfaction) ~ type_of_travel + checkin_service + 
+                     leg_room_service + online_boarding + 
+                     onboard_service + cleanliness, 
+                   data = train_data, 
+                   family = "binomial")
+res.dev <- residuals(final_model, type = "deviance")
+
+# Deviance Residuals 
+plot_1 <- ggplot(train_data, aes(x = checkin_service, y = res.dev)) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(x = "Check-in Service", y = "Deviance") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted")
+
+plot_2 <- ggplot(train_data, aes(x = leg_room_service, y = res.dev)) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(x = "Leg Room Service", y = "Deviance") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted")
+
+plot_3 <- ggplot(train_data, aes(x = online_boarding, y = res.dev)) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(x = "Online Boarding", y = "Deviance") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted")
+
+plot_4 <- ggplot(train_data, aes(x = onboard_service, y = res.dev)) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(x = "Onboard Service", y = "Deviance") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted")
+
+plot_5 <- ggplot(train_data, aes(x = cleanliness, y = res.dev)) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(x = "Cleanliness", y = "Deviance") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted")
+
+plot_6 <- ggplot(train_data, aes(x = leg_room_service, y = res.dev)) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(x = "Leg Room Service", y = "Deviance") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dotted")
+
+# save
+grid_1 <- grid.arrange(plot_1, plot_2, plot_3, plot_4,plot_5, plot_6,  ncol = 2,
+                       top = "Figure 4: Deviance Residuals by All Predictors")
+ggsave("deviance_residuals_plot_1_4.png", grid_1, width = 15, height = 12, dpi = 600)
+
+
+
+```
+
+```{r}
+numerical_data <- data.frame(
+  Variable = c("Age", "Flight Distance", "Inflight Wifi Service",
+               "Departure/Arrival Time Convenient", "Ease of Online Booking",
+               "Gate Location", "Food and Drink", "Seat Comfort",
+               "Inflight Entertainment", "Onboard Service",
+               "Leg Room Service", "Baggage Handling",
+               "Checkin Service", "Inflight Service",
+               "Cleanliness", "Departure Delay in Minutes",
+               "Arrival Delay in Minutes"),
+  `Variable Type` = c("continuous numerical", "continuous numerical", 
+                                    "discrete numerical", "discrete numerical", 
+                                    "discrete numerical", "discrete numerical", 
+                                    "discrete numerical", "discrete numerical", 
+                                    "discrete numerical", "discrete numerical", 
+                                    "discrete numerical", "discrete numerical", 
+                                    "discrete numerical", "discrete numerical", 
+                                    "discrete numerical", "continuous numerical", 
+                                    "continuous numerical"),
+  Min = c(7, 67, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0),
+  `1st Qu` = c(26, 404, 2, 2, 2, 2, 2, 2, 2, 3, 2, 3, 3, 3, 2, 0, 0),
+  Median = c(40, 859, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 3, 4, 3, 0, 0),
+  Mean = c(39.39, 1203, 2.724, 3.03, 2.749, 2.966, 3.192, 3.425, 3.326, 3.374, 3.314, 3.611, 3.332, 3.643, 3.274, 14.39, 15.07),
+  `3rd Qu` = c(51, 1773, 4, 4, 4, 4, 4, 5, 4, 4, 4, 4, 4, 5, 4, 12, 13),
+  Max = c(85, 4983, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 435, 470),
+  check.names = FALSE 
+)
+
+
+kable(numerical_data, caption = "Summary of the Airline Passenger Satisfaction Data Set", format = "markdown")
+```
+
+\newpage
+```{r}
+model_summary <- data.frame(
+  Term = c("(Intercept)", "type_of_travelPersonal Travel", "checkin_service", "leg_room_service", "online_boarding", "onboard_service", "cleanliness"),
+  Estimate = c(-6.34544, -2.51572, 0.24256, 0.29034, 0.77071, 0.43286, 0.25725),
+  `Std. Error` = c(0.33477, 0.15809, 0.05163, 0.05093, 0.05452, 0.05492, 0.05108),
+  `z value` = c(-18.955, -15.913, 4.698, 5.701, 14.138, 7.881, 5.036),
+  `Pr(>|z|)` = c("< 2e-16", "< 2e-16", "2.63e-06", "1.19e-08", "< 2e-16", "3.24e-15", "4.74e-07"),
+   check.names = FALSE 
+)
+vif_values <- c(NA, 
+                1.056536, 
+                1.080181, 
+                1.079915,
+                1.077078,
+                1.139211, 
+                1.076431) 
+
+model_summary$VIF <- vif_values
+knitr::kable(model_summary, caption = "Summary of GLM Coefficients from BIC Selection", format = "markdown")
+```
+\newpage
+```{r}
+model_summary_lasso <- data.frame(
+  Term = c("(Intercept)", "baggage_handling", "checkin_service", 
+           "leg_room_service", "online_boarding", "onboard_service", 
+           "cleanliness"),
+  Estimate = c(-7.23710, 0.14555, 0.14196, 0.32871, 0.84715, 0.31973, 0.25967),
+  `Std. Error` = c(0.33664, 0.05675, 0.04689, 0.04685, 0.05084, 0.05341, 0.04542),
+  `z value` = c(-21.498, 2.565, 3.027, 7.016, 16.662, 5.986, 5.717),
+  `Pr(>|z|)` = c("< 2e-16", "0.01032", "0.00247", "2.28e-12", "< 2e-16", "2.15e-09", "1.09e-08"),
+  `VIF value` = c("NA","1.355384","1.064691","1.116705","1.067377","1.299330","1.052273 "),
+
+  check.names = FALSE
+)
+
+
+kable(model_summary_lasso, caption = "Summary of GLM Coefficients from LASSO Selection", format = "markdown")
+```
+\newpage
+```{r}
+# AIC
+model_summary_aic <- data.frame(
+  Term = c("(Intercept)", "inflight_wifi_service", "checkin_service", 
+           "leg_room_service", "online_boarding", "onboard_service", 
+           "cleanliness"),
+  Estimate = c(-7.14922, 0.09452, 0.16282, 0.34507, 0.80520, 0.37277, 0.26066),
+  `Std. Error` = c(0.33140, 0.04646, 0.04688, 0.04596, 0.05334, 0.04911, 0.04544),
+  `z value` = c(-21.573, 2.035, 3.473, 7.508, 15.096, 7.591, 5.737),
+  `Pr(>|z|)` = c("< 2e-16", "0.041892", "0.000514", "6.01e-14", "< 2e-16", "3.17e-14", "9.65e-09"),
+  check.names = FALSE
+)
+vif_values <- c(NA, 1.115239, 1.063085, 1.073949, 1.167469, 1.095694, 1.053741)
+
+model_summary_aic$VIF <- vif_values
+kable(model_summary_aic, caption = "Summary of GLM Coefficients from AIC Selection", format = "markdown")
+
+```
+
+```{r}
+categorical_data <- data.frame(
+  Variable = c("Gender", "Customer Type", "Type of Travel", "Customer Class","satisfaction"),
+  Categories = c("Male, Female", 
+                 "Loyal Customer, Disloyal Customer", 
+                 "Personal Travel, Business Travel", 
+                 "Eco, Eco Plus, Business","Satisfied,not Satisfied"),
+  Description = c("Gender of the passenger", 
+                  "Whether the customer is loyal or not", 
+                  "Purpose of the travel", 
+                  "Class of the flight ticket","Passenger Satisfaction Level")
+)
+
+knitr::kable(categorical_data, caption = "Summary of Categorical Variables", format = "markdown")
+```
+
+
+
+
+```{r}
+
+predicted_probabilities <- predict(lmod, newdata = test_data, type = "response")
+predicted_classes_corrected <- ifelse(predicted_probabilities > 0.5, "satisfied", "neutral or dissatisfied")
+actual_classes <- as.factor(test_data$satisfaction) 
+
+# acc
+accuracy_corrected <- sum(predicted_classes_corrected == actual_classes) / length(actual_classes)
+print(accuracy_corrected)
+```
+
+```{r}
+variables_bic <- c("customer_type", "type_of_travel", "inflight_wifi_service",
+                   "departure_arrival_time_convenient", "online_boarding", "onboard_service",
+                   "leg_room_service", "baggage_handling", "checkin_service",
+                   "cleanliness")
+
+variables_aic <- c("customer_type", "age", "type_of_travel",
+                   "customer_class", "inflight_wifi_service", "departure_arrival_time_convenient",
+                   "online_boarding", "onboard_service", "leg_room_service",
+                   "baggage_handling", "checkin_service", "inflight_service",
+                   "cleanliness")
+
+df_bic <- data.frame(Variable = variables_bic)
+kable(df_bic, caption = "Variables Selected by BIC", format = "markdown")
+
+df_aic <- data.frame(Variable = variables_aic)
+kable(df_aic, caption = "Variables Selected by AIC", format = "markdown")
+
+# LASSO
+lasso_results <- data.frame(
+  Variable = c("flight_distance", "inflight_wifi_service", "departure_arrival_time_convenient",
+               "online_boarding", "seat_comfort", "inflight_entertainment",
+               "onboard_service", "leg_room_service", "baggage_handling",
+               "checkin_service", "cleanliness"),
+  Coefficient = c(0.0002177576, 0.0410383275, -0.0333989638,
+                  0.4626892990, 0.0409142178, 0.2159156659,
+                  0.1387832220, 0.1337961783, 0.0286244577,
+                  0.0812373131, 0.0086681442)
+)
+
+
+library(knitr)
+kable(lasso_results, caption = "Variables and Coefficients Selected by LASSO Regression", format = "markdown")
+
+```
+```{r}
+n <- nrow(train_data)
+p <- length(coef(lmod))-1
+D_cut <- qf(0.5, p+1, n-p-1)
+which(cooks.distance(lmod) > D_cut)
+```
+```{r}
+n <- nrow(train_data)
+p <- length(coef(lmod1))-1
+D_cut <- qf(0.5, p+1, n-p-1)
+which(cooks.distance(lmod1) > D_cut)
+```
+
+```{r}
+n <- nrow(train_data)
+p <- length(coef(lmod2))-1
+D_cut <- qf(0.5, p+1, n-p-1)
+which(cooks.distance(lmod2) > D_cut)
+```
+
